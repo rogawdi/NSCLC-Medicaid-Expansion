@@ -2,7 +2,7 @@
 Generalized Difference-in-Differences Analysis with Propensity Score Matching from the SEER database
 
 This repository contains R code and related materials for the study:
-"Effects of State-Wide Medicaid Expansion on Resectable Non–Small Cell Lung Cancer Survival"
+"Effect of State-Wide Medicaid Expansion on Resectable Non–Small Cell Lung Cancer Survival"
 
 This study used SEER data (2006–2019) and a quasi-experimental, generalized difference-in-differences approach to evaluate whether state-level Medicaid expansion was associated with improved 2-year survival and early-stage diagnosis among patients with resectable non-small cell lung cancer (NSCLC).
 
@@ -17,9 +17,11 @@ Content:
   8.  Kaplan-Meier survival analysis of post-matching expansion groups log rank and Benjamini-Hochberg adjusted pairwise comparisons
   9.  Stage at diagnosis of matched cohorts with placebo falsification modeling - to verify parallel trends assumption
   10.  State map plot
-	•	Functions: "survival", "survminer" for Kaplan-Meier analyses. "Matching", "MatchIt" for propensity score matching, "lmtest" for linear model assumptions, "usmap" for map generation. Other custom R functions for matching, covariate balance assessment, and plotting. 
-	•	README.md: This file.
-	•	LICENSE: MIT License (or other license of your choice).
+
+
+•	Functions: "survival", "survminer" for Kaplan-Meier analyses. "Matching", "MatchIt" for propensity score matching, "lmtest" for linear model assumptions, "usmap" for map generation. Other custom R functions for matching, covariate balance assessment, and plotting. 
+•	README.md: This file.
+•	LICENSE: MIT License (or other license of your choice).
 This study used the SEER (Surveillance, Epidemiology, and End Results) public-use dataset. Access to SEER data is available upon request and approval from the National Cancer Institute: https://seer.cancer.gov/data/
 
 Note: No patient-level data are included in this repository. Only code and summary-level outputs are shared.
@@ -35,4 +37,4 @@ To reproduce the results:
 Citation
 If you use this code or build upon this work, please cite our paper (once published) and acknowledge this repository.
 
-Rohin Gawdi. Effects of State-Wide Medicaid Expansion on Resectable Non–Small Cell Lung Cancer Survival. [Journal once available]. 2025. [DOI once available]
+Rohin Gawdi. Effect of State-Wide Medicaid Expansion on Resectable Non–Small Cell Lung Cancer Survival. [Journal once available]. 2025. [DOI once available]
