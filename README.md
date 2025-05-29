@@ -20,7 +20,9 @@ Content:
 
 
 •	Functions: "survival", "survminer" for Kaplan-Meier analyses. "Matching", "MatchIt" for propensity score matching, "lmtest" for linear model assumptions, "usmap" for map generation. Other custom R functions for matching, covariate balance assessment, and plotting. 
+
 •	README.md: This file.
+
 •	LICENSE: MIT License (or other license of your choice).
 This study used the SEER (Surveillance, Epidemiology, and End Results) public-use dataset. Access to SEER data is available upon request and approval from the National Cancer Institute: https://seer.cancer.gov/data/
 
