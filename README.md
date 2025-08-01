@@ -16,7 +16,12 @@ Content:
   7.  Placebo Falsification Modeling for Survival across entire cohort - to verify parallel trends assumption
   8.  Kaplan-Meier survival analysis of post-matching expansion groups log rank and Benjamini-Hochberg adjusted pairwise comparisons
   9.  Stage at diagnosis of matched cohorts with placebo falsification modeling - to verify parallel trends assumption
-  10.  State map plot
+  10. State map plot
+  11. Differential Benefit Analysis - who benefitted most from Medicaid Expansion across the entire cohort?
+  12. Number and Percent of patients censored at each time point: 24, 48, and 60 months
+  13. Cox proportional hazards models of matched groups with generalized difference-in-differences models for survival - capped at 48 months
+  14. Cox proportional hazards models of matched groups with generalized difference-in-differences models for survival - capped at 60 months
+      
 
 
 •	Functions: "survival", "survminer" for Kaplan-Meier analyses. "Matching", "MatchIt" for propensity score matching, "lmtest" for linear model assumptions, "usmap" for map generation. Other custom R functions for matching, covariate balance assessment, and plotting. 
