@@ -2931,19 +2931,49 @@ gg_stage_plot <- ggplot(avg_psm_by_stage, aes(x = dx.yr, y = avg_survival, color
 # ggsave("figures/exsurv_plot_PSM_byStage.png", plot = gg_stage_plot, width = 12, height = 6, dpi = 300)
 
 
-# placebo_model_pre <- glm(early_stage ~ did_treat * did_time, 
-#                          data = cleaned_data %>% filter(dx.yr_grouped %in% c("2011-2013")),
-#                          family = binomial())
-# 
-# coeftest(placebo_model_pre, vcov = sandwich)
-# summary(placebo_model_pre)
-# 
-# # Tidy output
-# tidy(placebo_model_pre, conf.int = TRUE, exponentiate = TRUE)
-# write.csv(tidy(placebo_model_pre, conf.int = TRUE, exponentiate = TRUE), 
-#           "low_income/placeboModel_pre.csv", 
-#           row.names = FALSE)
+#### 10. STATE MAP ####
+install.packages("usmap")
+install.packages("ggplot2")
 
+
+# Your Medicaid expansion classification
+state_expansion <- data.frame(
+  state = c(state.name),  # built-in state names
+  status = NA_character_
+)
+
+# Define statuses manually based on your DiD design
+early_states <- c("California", "Connecticut", "New Jersey", "Washington")
+mid_states <- c("Kentucky", "New Mexico", "Hawaii", "Iowa")
+late_states <- c("Louisiana", "Alaska")
+non_expanded <- c("Utah", "Georgia")
+not_considered <- setdiff(state.name, c(early_states, mid_states, late_states, non_expanded))
+
+# Assign categories
+state_expansion$status[state_expansion$state %in% early_states] <- "Early Expansion (2011)"
+state_expansion$status[state_expansion$state %in% mid_states] <- "On-Time Expansion (2014)"
+state_expansion$status[state_expansion$state %in% late_states] <- "Late Expansion (2016)"
+state_expansion$status[state_expansion$state %in% non_expanded] <- "Non-Expansion"
+state_expansion$status[state_expansion$state %in% not_considered] <- "N/A"
+
+# Plot
+state_map <- usmap::plot_usmap(data = state_expansion, values = "status") +
+  scale_fill_manual(
+    values = c(
+      "Non-Expansion" = "gray2" ,          
+      "Early Expansion (2011)" = "#003f5c",    
+      "On-Time Expansion (2014)" = "#bc5090",      
+      "Late Expansion (2016)" =  "#ffa600",
+     "N/A" = "lightgrey"
+    ),
+    name = "Medicaid Expansion"
+  ) +
+  labs(title = "Medicaid Expansion Status by State") +
+  theme(legend.position = "bottom", text = element_text(family = "Times")) 
+
+ggsave("figures/StatePlot.pdf", 
+       plot = state_map, 
+       width = 15, height = 12)
 
 
 
@@ -3131,51 +3161,6 @@ eligible_summary_24 <- combined_matched_data %>%
 print(eligible_summary_24
 )
 write.csv(eligible_summary_24, "coxdata/Percent_Eligible_24.csv", row.names = FALSE)
-
-
-#### 10. STATE MAP ####
-install.packages("usmap")
-install.packages("ggplot2")
-
-
-# Your Medicaid expansion classification
-state_expansion <- data.frame(
-  state = c(state.name),  # built-in state names
-  status = NA_character_
-)
-
-# Define statuses manually based on your DiD design
-early_states <- c("California", "Connecticut", "New Jersey", "Washington")
-mid_states <- c("Kentucky", "New Mexico", "Hawaii", "Iowa")
-late_states <- c("Louisiana", "Alaska")
-non_expanded <- c("Utah", "Georgia")
-not_considered <- setdiff(state.name, c(early_states, mid_states, late_states, non_expanded))
-
-# Assign categories
-state_expansion$status[state_expansion$state %in% early_states] <- "Early Expansion (2011)"
-state_expansion$status[state_expansion$state %in% mid_states] <- "On-Time Expansion (2014)"
-state_expansion$status[state_expansion$state %in% late_states] <- "Late Expansion (2016)"
-state_expansion$status[state_expansion$state %in% non_expanded] <- "Non-Expansion"
-state_expansion$status[state_expansion$state %in% not_considered] <- "N/A"
-
-# Plot
-state_map <- usmap::plot_usmap(data = state_expansion, values = "status") +
-  scale_fill_manual(
-    values = c(
-      "Non-Expansion" = "gray2" ,          
-      "Early Expansion (2011)" = "#003f5c",    
-      "On-Time Expansion (2014)" = "#bc5090",      
-      "Late Expansion (2016)" =  "#ffa600",
-     "N/A" = "lightgrey"
-    ),
-    name = "Medicaid Expansion"
-  ) +
-  labs(title = "Medicaid Expansion Status by State") +
-  theme(legend.position = "bottom", text = element_text(family = "Times")) 
-
-ggsave("figures/StatePlot.pdf", 
-       plot = state_map, 
-       width = 15, height = 12)
 
 
 
