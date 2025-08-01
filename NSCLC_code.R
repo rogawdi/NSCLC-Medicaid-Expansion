@@ -2931,25 +2931,186 @@ gg_stage_plot <- ggplot(avg_psm_by_stage, aes(x = dx.yr, y = avg_survival, color
 # ggsave("figures/exsurv_plot_PSM_byStage.png", plot = gg_stage_plot, width = 12, height = 6, dpi = 300)
 
 
-# placebo_model_pre <- glm(early_stage ~ did_treat * did_time, 
-#                          data = cleaned_data %>% filter(dx.yr_grouped %in% c("2011-2013")),
-#                          family = binomial())
-# 
-# coeftest(placebo_model_pre, vcov = sandwich)
-# summary(placebo_model_pre)
-# 
-# # Tidy output
-# tidy(placebo_model_pre, conf.int = TRUE, exponentiate = TRUE)
-# write.csv(tidy(placebo_model_pre, conf.int = TRUE, exponentiate = TRUE), 
-#           "low_income/placeboModel_pre.csv", 
-#           row.names = FALSE)
+### Lung CA Disparities ###
+### Healthcare Disparities for total Pre/Post populations ### 
+
+# set Lung Income quintiles to be equal 
+
+seer_final <- seer_final %>%
+  mutate(income_quintile_equal = ntile(midpoint, 5)) %>%
+  mutate(income_quintile_equal = factor(income_quintile_equal,
+                                        levels = 1:5,
+                                        labels = c("Q1", "Q2", "Q3", "Q4", "Q5")))
+
+# seer_final$income_quintile <- relevel(seer_final$income_quintile, ref = "Q3")
+
+seer_final <- seer_final %>%
+  filter(!grepl("<NA>", trimws(income_quintile_equal)))
+
+# # View result
+table(seer_final$income_quintile_equal, useNA = "ifany")
+
+# Step 1: Define expansion timing for each group # already done
+seer_final <- seer_final %>%
+  mutate(expansion1_time = if_else(
+    Medicaid_Expansion_Status == 1,
+    case_when(
+      dx.yr_grouped %in% c("2006-2010") ~ "Pre",
+      dx.yr_grouped %in% c("2011-2013", "2014-2016", "2017-2019") ~ "Post",
+      TRUE ~ NA_character_
+    ),
+    NA_character_
+  ))
+
+seer_final <- seer_final %>%
+  mutate(expansion2_time = if_else(
+    Medicaid_Expansion_Status == 2,
+    case_when(
+      dx.yr_grouped %in% c("2006-2010", "2011-2013") ~ "Pre",
+      dx.yr_grouped %in% c("2014-2016", "2017-2019") ~ "Post",
+      TRUE ~ NA_character_
+    ),
+    NA_character_
+  ))
+
+seer_final <- seer_final %>%
+  mutate(expansion3_time = if_else(
+    Medicaid_Expansion_Status == 3,
+    case_when(
+      dx.yr_grouped %in% c("2006-2010", "2011-2013", "2014-2016") ~ "Pre",
+      dx.yr_grouped %in% c("2017-2019") ~ "Post",
+      TRUE ~ NA_character_
+    ),
+    NA_character_
+  ))
+
+# Step 2: Define Pre/Post periods across all expansion groups
+seer_disp <- seer_final %>%
+  mutate(
+    Time_Period = case_when(
+      (Medicaid_Expansion_Status == "1" & expansion1_time == "Pre") ~ "Pre",
+      (Medicaid_Expansion_Status == "1" & expansion1_time == "Post") ~ "Post",
+      (Medicaid_Expansion_Status == "2" & expansion2_time == "Pre") ~ "Pre",
+      (Medicaid_Expansion_Status == "2" & expansion2_time == "Post") ~ "Post",
+      (Medicaid_Expansion_Status == "3" & expansion3_time == "Pre") ~ "Pre",
+      (Medicaid_Expansion_Status == "3" & expansion3_time == "Post") ~ "Post",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(!is.na(Time_Period))
+
+seer_disp$Time_Period <- factor(seer_disp$Time_Period)
+
+seer_disp$Time_Period <- relevel(seer_disp$Time_Period, ref = "Pre")
 
 
+# Set references
+seer_disp <- seer_disp %>%
+  mutate(
+    income_quintile_equal = relevel(factor(income_quintile_equal), ref = "Q5"),
+    Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic.= relevel(factor(
+      Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic.),ref = "Non-Hispanic White"),
+    stage_group      = relevel(factor(stage_group),      ref = "II+III"),
+    age_category     = relevel(factor(age_category),     ref = "Older Adult"),
+    Marital_Grouped  = relevel(factor(Marital_Grouped),  ref = "Single/Unknown"),
+    Sex = relevel(factor(Sex), ref = "Female"),
+    Rural.Urban.Continuum.Code = relevel(factor(Rural.Urban.Continuum.Code), ref = "Counties in metropolitan areas ge 1 million pop")
+  )
 
+# Step 3: Create a Cox model with interaction terms to test for disparity change
+cox_model <- coxph(
+  Surv(capped_time, capped_event) ~ 
+    (age_category + Marital_Grouped + Sex
+     + Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic. + Rural.Urban.Continuum.Code
+     + income_quintile_equal 
+     + surgery_status
+     + stage_group
+     + rad_group
+     ) * Time_Period,
+  data = seer_disp,
+  robust = TRUE
+)
 
+print(cox_model)
 
+# Step 4: Extract interaction terms (i.e., change in disparities pre/post)
+interaction_results <- tidy(cox_model, conf.int = TRUE) %>%
+  filter(grepl(":Time_PeriodPost", term)) %>%
+  mutate(
+    HR = exp(estimate),
+    CI_lower = exp(conf.low),
+    CI_upper = exp(conf.high),
+    sig = ifelse(p.value < 0.05, "Yes", "No")
+  ) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value, sig)
 
+# View interaction effects
+print(interaction_results)
 
+View(interaction_results)
+
+write.csv(interaction_results, "coxdata/pre-postDisparities.csv")
+
+## Percent Censored at Time X 
+# 48 months
+# Define 4 years in months
+four_years_months <- 12 * 4
+
+# Add eligibility column
+combined_matched_data <- combined_matched_data %>%
+  mutate(eligible_4yr = Survival.months >= four_years_months)
+
+# Get counts and percentages
+eligible_summary_48 <- combined_matched_data %>%
+  group_by(Medicaid_Expansion_Status) %>%
+  summarize(
+    N_total = n(),
+    N_eligible_4yr = sum(eligible_4yr),
+    Pct_eligible_4yr = round(100 * mean(eligible_4yr), 1)
+  )
+print(eligible_summary_48
+      )
+write.csv(eligible_summary_48, "coxdata/Percent_Eligible_48.csv", row.names = FALSE)
+
+# 60 Months
+# Define 5 years in months
+five_years_months <- 12 * 5
+
+# Add eligibility column
+combined_matched_data <- combined_matched_data %>%
+  mutate(eligible_5yr = Survival.months >= five_years_months)
+
+# Get counts and percentages
+eligible_summary_60 <- combined_matched_data %>%
+  group_by(Medicaid_Expansion_Status) %>%
+  summarize(
+    N_total = n(),
+    N_eligible_5yr = sum(eligible_5yr),
+    Pct_eligible_5yr = round(100 * mean(eligible_5yr), 1)
+  )
+print(eligible_summary_60
+)
+write.csv(eligible_summary_60, "coxdata/Percent_Eligible_60.csv", row.names = FALSE)
+
+# 24 months
+# Define 2 years in months
+two_years_months <- 12 * 2
+
+# Add eligibility column
+combined_matched_data <- combined_matched_data %>%
+  mutate(eligible_2yr = Survival.months >= two_years_months)
+
+# Get counts and percentages
+eligible_summary_24 <- combined_matched_data %>%
+  group_by(Medicaid_Expansion_Status) %>%
+  summarize(
+    N_total = n(),
+    N_eligible_2yr = sum(eligible_2yr),
+    Pct_eligible_2yr = round(100 * mean(eligible_2yr), 1)
+  )
+print(eligible_summary_24
+)
+write.csv(eligible_summary_24, "coxdata/Percent_Eligible_24.csv", row.names = FALSE)
 
 
 #### 10. STATE MAP ####
@@ -2996,3 +3157,824 @@ ggsave("figures/StatePlot.pdf",
        plot = state_map, 
        width = 15, height = 12)
 
+
+
+### 4 YEAR SURVIVAL ####
+# Refit Cox Proportions Hazard with Propensity Score Matching #
+
+# overall (not inclusive of expansion status) does not include Status + dx.yr_grouped
+cleaned_data$capped_time_48 <- pmin(cleaned_data$Survival.months, 48)
+cleaned_data$capped_event_48 <- ifelse(cleaned_data$Survival.months > 48, 0, cleaned_data$Event)
+
+#Combine previous 3 Matched Data tables into 1 group
+# Combine the matched datasets and add a group identifier
+matched_data_1$group <- "Group 1"
+matched_data_2$group <- "Group 2"
+matched_data_3$group <- "Group 3"
+
+# Combine all matched datasets into one
+combined_matched_data <- bind_rows(matched_data_1, matched_data_2, matched_data_3)
+
+
+combined_matched_data$capped_time_48 <- pmin(combined_matched_data$Survival.months, 48)
+combined_matched_data$capped_event_48 <- ifelse(combined_matched_data$Survival.months > 48, 0, combined_matched_data$Event)
+combined_matched_data <- combined_matched_data[combined_matched_data$capped_time_48 > 0, ]
+
+cox_psm_final <- coxph(
+  Surv(capped_time_48, capped_event_48) ~ age_category + Sex + Marital_Grouped +
+    Rural.Urban.Continuum.Code + Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic. + Medicaid_Expansion_Status,
+  data = combined_matched_data,
+  robust = TRUE  # Adds robust standard errors
+)
+
+capped_fin_cox_psm_final_sum <- tidy(cox_psm_final, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_sum)
+
+write.csv(capped_fin_cox_psm_final_sum, "coxdata/48/psm_covariates.csv")
+
+# Group by Group Difference in Differences analysis
+# 0 vs 1
+# Create expansion1_time variable (Pre = 2006-2010, Post = 2011-2016)
+matched_data_1 <- matched_data_1 %>%
+  mutate(expansion1_time = case_when(
+    dx.yr_grouped %in% c("2006-2010") ~ "Pre",
+    dx.yr_grouped %in% c("2011-2013", "2014-2016", "2017-2019") ~ "Post",
+    TRUE ~ NA_character_  # Assign NA for years outside the study period
+  ))
+
+# Create expansion1_group variable (1 = expansion1 states, 0 = non-expansion states)
+matched_data_1 <- matched_data_1 %>%
+  mutate(expansion1_group = case_when(
+    Medicaid_Expansion_Status == 1 ~ 1,  # Expansion 1 (early)
+    Medicaid_Expansion_Status == 0 ~ 0,  # Non-expansion (control)
+    TRUE ~ NA_real_  # Assign NA for other groups
+  ))
+
+# Subset to only include subjects from Expansion Group 0 and 1
+matched_data_1_did <- matched_data_1 %>%
+  filter(Medicaid_Expansion_Status %in% c(0, 1)) %>%
+  # Create a binary treatment variable:
+  mutate(did_treat = ifelse(Medicaid_Expansion_Status == 1, 1, 0),
+         # Create a time variable: "Pre" for 2006-2010, "Post" for later years.
+         did_time = ifelse(dx.yr_grouped == "2006-2010", "Pre", "Post"))
+
+table(matched_data_1_did$dx.yr_grouped)
+
+
+# Convert did_time and did_treat to factors with explicit ordering:
+matched_data_1_did <- matched_data_1_did %>%
+  mutate(
+    did_time = factor(did_time, levels = c("Pre", "Post")),
+    did_treat = factor(did_treat, levels = c(0, 1))
+  )
+
+matched_data_1_did$capped_time_48 <- pmin(matched_data_1_did$Survival.months, 48)
+matched_data_1_did$capped_event_48 <- ifelse(matched_data_1_did$Survival.months > 48, 0, matched_data_1_did$Event)
+
+
+
+capped_fin_cox_psm_final_did_1 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time * did_treat + cluster(Medicaid.Expansion.Status),
+                                        data = matched_data_1_did, robust = TRUE)
+
+
+summary(capped_fin_cox_psm_final_did_1)
+
+capped_fin_cox_psm_final_did_1 <- tidy(capped_fin_cox_psm_final_did_1, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_1)
+
+write.csv(capped_fin_cox_psm_final_did_1, "coxdata/48/psm_0v1.csv")
+
+
+
+# 0 vs 2
+# Create expansion1_time variable (Pre = 2006-2013, Post = 2014-2019)
+matched_data_2 <- matched_data_2 %>%
+  mutate(expansion2_time = case_when(
+    dx.yr_grouped %in% c("2006-2010", "2011-2013") ~ "Pre",
+    dx.yr_grouped %in% c("2014-2016", "2017-2019") ~ "Post",
+    TRUE ~ NA_character_  # Assign NA for years outside the study period
+  ))
+
+# Create expansion1_group variable (1 = expansion2 states, 0 = non-expansion states)
+matched_data_2 <- matched_data_2 %>%
+  mutate(expansion2_group = case_when(
+    Medicaid_Expansion_Status == 2 ~ 1,  # Expansion 2 (early)
+    Medicaid_Expansion_Status == 0 ~ 0,  # Non-expansion (control)
+    TRUE ~ NA_real_  # Assign NA for other groups
+  ))
+
+
+
+# Subset to only include subjects from Expansion Group 0 and 2
+matched_data_2_did <- matched_data_2 %>%
+  filter(Medicaid_Expansion_Status %in% c(0, 2)) %>%
+  # Assign treatment variable: 1 for expansion (2), 0 for non-expansion (0)
+  mutate(did_treat_2 = ifelse(Medicaid_Expansion_Status == 2, 1, 0),
+         # Define Pre (2006-2013) and Post (2014+)
+         did_time_2 = ifelse(dx.yr_grouped %in% c("2006-2010", "2011-2013"), "Pre", "Post"))
+
+# Convert did_time and did_treat to factors with explicit ordering:
+matched_data_2_did <- matched_data_2_did %>%
+  mutate(
+    did_time_2 = factor(did_time_2, levels = c("Pre", "Post")),
+    did_treat_2 = factor(did_treat_2, levels = c(0, 1))
+  )
+
+
+matched_data_2_did <- matched_data_2_did %>%
+  filter(!grepl("Unknown Race", trimws(Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic.)))
+
+matched_data_2_did$capped_time_48 <- pmin(matched_data_2_did$Survival.months, 48)
+matched_data_2_did$capped_event_48 <- ifelse(matched_data_2_did$Survival.months > 48, 0, matched_data_2_did$Event)
+
+
+
+capped_fin_cox_psm_final_did_2 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time_2 * did_treat_2 + cluster(Medicaid.Expansion.Status),
+                                        data = matched_data_2_did, robust = TRUE)
+
+summary(capped_fin_cox_psm_final_did_2)
+
+capped_fin_cox_psm_final_did_2 <- tidy(capped_fin_cox_psm_final_did_2, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_2)
+
+write.csv(capped_fin_cox_psm_final_did_2, "coxdata/48/psm_0v2.csv")
+
+
+# 0 vs 3
+# Create expansion1_time variable (Pre = 2006-2013, Post = 2014-2019)
+matched_data_3 <- matched_data_3 %>%
+  mutate(expansion2_time = case_when(
+    dx.yr_grouped %in% c("2006-2010", "2011-2013") ~ "Pre",
+    dx.yr_grouped %in% c("2014-2016", "2017-2019") ~ "Post",
+    TRUE ~ NA_character_  # Assign NA for years outside the study period
+  ))
+
+# Create expansion1_group variable (1 = expansion2 states, 0 = non-expansion states)
+matched_data_3 <- matched_data_3 %>%
+  mutate(expansion2_group = case_when(
+    Medicaid_Expansion_Status == 3 ~ 1,  # Expansion 2 (early)
+    Medicaid_Expansion_Status == 0 ~ 0,  # Non-expansion (control)
+    TRUE ~ NA_real_  # Assign NA for other groups
+  ))
+
+
+
+# Subset to only include subjects from Expansion Group 0 and 2
+matched_data_3_did <- matched_data_3 %>%
+  filter(Medicaid_Expansion_Status %in% c(0, 3)) %>%
+  # Assign treatment variable: 1 for expansion (2), 0 for non-expansion (0)
+  mutate(did_treat_3 = ifelse(Medicaid_Expansion_Status == 3, 1, 0),
+         # Define Pre (2006-2013) and Post (2014+)
+         did_time_3 = ifelse(dx.yr_grouped %in% c("2006-2010", "2011-2013"), "Pre", "Post"))
+
+# Convert did_time and did_treat to factors with explicit ordering:
+matched_data_3_did <- matched_data_3_did %>%
+  mutate(
+    did_time_3 = factor(did_time_3, levels = c("Pre", "Post")),
+    did_treat_3 = factor(did_treat_3, levels = c(0, 1))
+  )
+
+matched_data_3_did <- matched_data_3_did %>%
+  filter(!grepl("Unknown Race", trimws(Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic.)))
+
+matched_data_3_did$capped_time_48 <- pmin(matched_data_3_did$Survival.months, 48)
+matched_data_3_did$capped_event_48 <- ifelse(matched_data_3_did$Survival.months > 48, 0, matched_data_3_did$Event)
+
+
+
+capped_fin_cox_psm_final_did_3 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time_3 * did_treat_3 + cluster(Medicaid.Expansion.Status),
+                                        data = matched_data_3_did, robust = TRUE)
+
+summary(capped_fin_cox_psm_final_did_3)
+
+capped_fin_cox_psm_final_did_3 <- tidy(capped_fin_cox_psm_final_did_3, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_3)
+
+write.csv(capped_fin_cox_psm_final_did_3, "coxdata/48/psm_0v3.csv")
+
+
+
+### EARLY EXPANSION IMPLEMENTATION/POST-IMPLEMENTATION 48 MONTH SURVIVAL
+
+# EARLY - consider early months (post-implementation periods)
+# Step 1: Subset data to focus on 2014-2019
+matched_data_1_did_early_1 <- matched_data_1 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2011-2013"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_1_did_early_1 <- matched_data_1_did_early_1 %>%
+  mutate(did_time = ifelse(dx.yr_grouped %in% c("2011-2013"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_1_did_early_1 <- matched_data_1_did_early_1 %>%
+  mutate(did_treat = ifelse(Medicaid_Expansion_Status == 1, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_1_did_early_1 <- matched_data_1_did_early_1 %>%
+  mutate(
+    did_time = factor(did_time, levels = c("Pre", "Post")),
+    did_treat = factor(did_treat, levels = c(0, 1))
+    
+  )
+
+# Check reference levels
+contrasts(matched_data_1_did_early_1$did_time)
+contrasts(matched_data_1_did_early_1$did_treat)
+
+matched_data_1_did_early_1$capped_time_48 <- pmin(matched_data_1_did_early_1$Survival.months, 48)
+matched_data_1_did_early_1$capped_event_48 <- ifelse(matched_data_1_did_early_1$Survival.months > 48, 0, matched_data_1_did_early_1$Event)
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_early_1 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time * did_treat+ cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_1_did_early_1, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_early_1)
+
+capped_fin_cox_psm_final_did_early_1 <- tidy(capped_fin_cox_psm_final_early_1, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_early_1)
+
+write.csv(capped_fin_cox_psm_final_did_early_1, "coxdata/48/psm_0v1_early.csv")
+
+
+# LATER
+# Step 1: Subset data to focus on 2014-2019
+matched_data_1_did_later_1 <- matched_data_1 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2014-2016", "2017-2019"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_1_did_later_1 <- matched_data_1_did_later_1 %>%
+  mutate(did_time = ifelse(dx.yr_grouped %in% c("2014-2016", "2017-2019"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_1_did_later_1 <- matched_data_1_did_later_1 %>%
+  mutate(did_treat = ifelse(Medicaid_Expansion_Status == 1, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_1_did_later_1 <- matched_data_1_did_later_1 %>%
+  mutate(
+    did_time = factor(did_time, levels = c("Pre", "Post")),
+    did_treat = factor(did_treat, levels = c(0, 1))
+    
+  )
+
+# Check reference levels
+contrasts(matched_data_1_did_later_1$did_time)
+contrasts(matched_data_1_did_later_1$did_treat)
+
+matched_data_1_did_later_1$capped_time_48 <- pmin(matched_data_1_did_later_1$Survival.months, 48)
+matched_data_1_did_later_1$capped_event_48 <- ifelse(matched_data_1_did_later_1$Survival.months > 48, 0, matched_data_1_did_later_1$Event)
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_later_1 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time * did_treat + cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_1_did_later_1, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_later_1)
+
+capped_fin_cox_psm_final_did_later_1 <- tidy(capped_fin_cox_psm_final_later_1, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_later_1)
+print(capped_fin_cox_psm_final_did_early_1)
+write.csv(capped_fin_cox_psm_final_did_later_1, "coxdata/48/psm_0v1_later.csv")
+
+
+
+### 48 month survival for implementation/postimplemntation periods for on-time expansion group##
+
+# EARLY - consider early months (post-implementation periods)
+# Step1: Subset data to focus on 2017-2019
+matched_data_2_did_early_2 <- matched_data_2 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2011-2013", "2014-2016"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_2_did_early_2 <- matched_data_2_did_early_2 %>%
+  mutate(did_time_2 = ifelse(dx.yr_grouped %in% c("2014-2016"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_2_did_early_2 <- matched_data_2_did_early_2 %>%
+  mutate(did_treat_2 = ifelse(Medicaid_Expansion_Status == 2, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_2_did_early_2 <- matched_data_2_did_early_2 %>%
+  mutate(
+    did_time_2 = factor(did_time_2, levels = c("Pre", "Post")),
+    did_treat_2 = factor(did_treat_2, levels = c(0, 1))
+  )
+
+# Check reference levels
+contrasts(matched_data_2_did_early_2$did_time_2)
+contrasts(matched_data_2_did_early_2$did_treat_2)
+
+matched_data_2_did_early_2$capped_time_48 <- pmin(matched_data_2_did_early_2$Survival.months, 48)
+matched_data_2_did_early_2$capped_event_48 <- ifelse(matched_data_2_did_early_2$Survival.months > 48, 0, matched_data_2_did_early_2$Event)
+
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_early_2 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time_2 * did_treat_2 + cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_2_did_early_2, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_early_2)
+
+capped_fin_cox_psm_final_did_early_2 <- tidy(capped_fin_cox_psm_final_early_2, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_early_2)
+
+write.csv(capped_fin_cox_psm_final_did_early_2, "coxdata/48/psm_0v2_early.csv")
+
+
+
+
+# LATER
+# Step1: Subset data to focus on 2017-2019
+matched_data_2_did_later_2 <- matched_data_2 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2011-2013", "2017-2019"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_2_did_later_2 <- matched_data_2_did_later_2 %>%
+  mutate(did_time_2 = ifelse(dx.yr_grouped %in% c("2017-2019"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_2_did_later_2 <- matched_data_2_did_later_2 %>%
+  mutate(did_treat_2 = ifelse(Medicaid_Expansion_Status == 2, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_2_did_later_2 <- matched_data_2_did_later_2 %>%
+  mutate(
+    did_time_2 = factor(did_time_2, levels = c("Pre", "Post")),
+    did_treat_2 = factor(did_treat_2, levels = c(0, 1))
+  )
+
+# Check reference levels
+contrasts(matched_data_2_did_later_2$did_time_2)
+contrasts(matched_data_2_did_later_2$did_treat_2)
+
+matched_data_2_did_later_2$capped_time_48 <- pmin(matched_data_2_did_later_2$Survival.months, 48)
+matched_data_2_did_later_2$capped_event_48 <- ifelse(matched_data_2_did_later_2$Survival.months > 48, 0, matched_data_2_did_later_2$Event)
+
+
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_later_2 <- coxph(Surv(capped_time_48, capped_event_48) ~ did_time_2 * did_treat_2 + cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_2_did_later_2, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_later_2)
+
+capped_fin_cox_psm_final_did_later_2 <- tidy(capped_fin_cox_psm_final_later_2, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_later_2)
+
+write.csv(capped_fin_cox_psm_final_did_later_2, "coxdata/48/psm_0v2_later.csv")
+
+
+
+### 5 YEAR SURVIVAL ####
+# Refit Cox Proportions Hazard with Propensity Score Matching #
+
+# overall (not inclusive of expansion status) does not include Status + dx.yr_grouped
+cleaned_data$capped_time_60 <- pmin(cleaned_data$Survival.months, 60)
+cleaned_data$capped_event_60 <- ifelse(cleaned_data$Survival.months > 60, 0, cleaned_data$Event)
+
+#Combine previous 3 Matched Data tables into 1 group
+# Combine the matched datasets and add a group identifier
+matched_data_1$group <- "Group 1"
+matched_data_2$group <- "Group 2"
+matched_data_3$group <- "Group 3"
+
+# Combine all matched datasets into one
+combined_matched_data <- bind_rows(matched_data_1, matched_data_2, matched_data_3)
+
+
+combined_matched_data$capped_time_60 <- pmin(combined_matched_data$Survival.months, 60)
+combined_matched_data$capped_event_60 <- ifelse(combined_matched_data$Survival.months > 60, 0, combined_matched_data$Event)
+combined_matched_data <- combined_matched_data[combined_matched_data$capped_time_60 > 0, ]
+
+cox_psm_final <- coxph(
+  Surv(capped_time_60, capped_event_60) ~ age_category + Sex + Marital_Grouped +
+    Rural.Urban.Continuum.Code + Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic. + Medicaid_Expansion_Status,
+  # cluster(Medicaid.Expansion.Status), 
+  data = combined_matched_data,
+  robust = TRUE  # Adds robust standard errors
+)
+
+capped_fin_cox_psm_final_sum <- tidy(cox_psm_final, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_sum)
+
+write.csv(capped_fin_cox_psm_final_sum, "coxdata/60/psm_covariates.csv")
+
+# Group by Group Difference in Differences analysis
+# 0 vs 1
+# Create expansion1_time variable (Pre = 2006-2010, Post = 2011-2016)
+matched_data_1 <- matched_data_1 %>%
+  mutate(expansion1_time = case_when(
+    dx.yr_grouped %in% c("2006-2010") ~ "Pre",
+    dx.yr_grouped %in% c("2011-2013", "2014-2016", "2017-2019") ~ "Post",
+    TRUE ~ NA_character_  # Assign NA for years outside the study period
+  ))
+
+# Create expansion1_group variable (1 = expansion1 states, 0 = non-expansion states)
+matched_data_1 <- matched_data_1 %>%
+  mutate(expansion1_group = case_when(
+    Medicaid_Expansion_Status == 1 ~ 1,  # Expansion 1 (early)
+    Medicaid_Expansion_Status == 0 ~ 0,  # Non-expansion (control)
+    TRUE ~ NA_real_  # Assign NA for other groups
+  ))
+
+# Subset to only include subjects from Expansion Group 0 and 1
+matched_data_1_did <- matched_data_1 %>%
+  filter(Medicaid_Expansion_Status %in% c(0, 1)) %>%
+  # Create a binary treatment variable:
+  # did_treat = 1 if Expansion Group 1, 0 if Expansion Group 0
+  mutate(did_treat = ifelse(Medicaid_Expansion_Status == 1, 1, 0),
+         # Create a time variable: "Pre" for 2006-2010, "Post" for later years.
+         did_time = ifelse(dx.yr_grouped == "2006-2010", "Pre", "Post"))
+
+table(matched_data_1_did$dx.yr_grouped)
+
+
+# Convert did_time and did_treat to factors with explicit ordering:
+matched_data_1_did <- matched_data_1_did %>%
+  mutate(
+    did_time = factor(did_time, levels = c("Pre", "Post")),
+    did_treat = factor(did_treat, levels = c(0, 1))
+  )
+
+matched_data_1_did$capped_time_60 <- pmin(matched_data_1_did$Survival.months, 60)
+matched_data_1_did$capped_event_60 <- ifelse(matched_data_1_did$Survival.months > 60, 0, matched_data_1_did$Event)
+
+
+
+capped_fin_cox_psm_final_did_1 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time * did_treat + cluster(Medicaid.Expansion.Status),
+                                        data = matched_data_1_did, robust = TRUE)
+
+
+summary(capped_fin_cox_psm_final_did_1)
+
+capped_fin_cox_psm_final_did_1 <- tidy(capped_fin_cox_psm_final_did_1, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_1)
+
+write.csv(capped_fin_cox_psm_final_did_1, "coxdata/60/psm_0v1.csv")
+
+
+
+# 0 vs 2
+# Create expansion1_time variable (Pre = 2006-2013, Post = 2014-2019)
+matched_data_2 <- matched_data_2 %>%
+  mutate(expansion2_time = case_when(
+    dx.yr_grouped %in% c("2006-2010", "2011-2013") ~ "Pre",
+    dx.yr_grouped %in% c("2014-2016", "2017-2019") ~ "Post",
+    TRUE ~ NA_character_  # Assign NA for years outside the study period
+  ))
+
+# Create expansion1_group variable (1 = expansion2 states, 0 = non-expansion states)
+matched_data_2 <- matched_data_2 %>%
+  mutate(expansion2_group = case_when(
+    Medicaid_Expansion_Status == 2 ~ 1,  # Expansion 2 (early)
+    Medicaid_Expansion_Status == 0 ~ 0,  # Non-expansion (control)
+    TRUE ~ NA_real_  # Assign NA for other groups
+  ))
+
+
+
+# Subset to only include subjects from Expansion Group 0 and 2
+matched_data_2_did <- matched_data_2 %>%
+  filter(Medicaid_Expansion_Status %in% c(0, 2)) %>%
+  # Assign treatment variable: 1 for expansion (2), 0 for non-expansion (0)
+  mutate(did_treat_2 = ifelse(Medicaid_Expansion_Status == 2, 1, 0),
+         # Define Pre (2006-2013) and Post (2014+)
+         did_time_2 = ifelse(dx.yr_grouped %in% c("2006-2010", "2011-2013"), "Pre", "Post"))
+
+# Convert did_time and did_treat to factors with explicit ordering:
+matched_data_2_did <- matched_data_2_did %>%
+  mutate(
+    did_time_2 = factor(did_time_2, levels = c("Pre", "Post")),
+    did_treat_2 = factor(did_treat_2, levels = c(0, 1))
+  )
+
+# matched_data_2_did <- matched_data_2_did %>%
+#   filter(!grepl("2017-2019", trimws(dx.yr_grouped))
+#   )
+
+
+matched_data_2_did <- matched_data_2_did %>%
+  filter(!grepl("Unknown Race", trimws(Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic.)))
+
+matched_data_2_did$capped_time_60 <- pmin(matched_data_2_did$Survival.months, 60)
+matched_data_2_did$capped_event_60 <- ifelse(matched_data_2_did$Survival.months > 60, 0, matched_data_2_did$Event)
+
+
+
+capped_fin_cox_psm_final_did_2 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time_2 * did_treat_2 + cluster(Medicaid.Expansion.Status),
+                                        data = matched_data_2_did, robust = TRUE)
+
+summary(capped_fin_cox_psm_final_did_2)
+
+capped_fin_cox_psm_final_did_2 <- tidy(capped_fin_cox_psm_final_did_2, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_2)
+
+write.csv(capped_fin_cox_psm_final_did_2, "coxdata/60/psm_0v2.csv")
+
+
+# 0 vs 3
+# Create expansion1_time variable (Pre = 2006-2013, Post = 2014-2019)
+matched_data_3 <- matched_data_3 %>%
+  mutate(expansion2_time = case_when(
+    dx.yr_grouped %in% c("2006-2010", "2011-2013") ~ "Pre",
+    dx.yr_grouped %in% c("2014-2016", "2017-2019") ~ "Post",
+    TRUE ~ NA_character_  # Assign NA for years outside the study period
+  ))
+
+# Create expansion1_group variable (1 = expansion2 states, 0 = non-expansion states)
+matched_data_3 <- matched_data_3 %>%
+  mutate(expansion2_group = case_when(
+    Medicaid_Expansion_Status == 3 ~ 1,  # Expansion 2 (early)
+    Medicaid_Expansion_Status == 0 ~ 0,  # Non-expansion (control)
+    TRUE ~ NA_real_  # Assign NA for other groups
+  ))
+
+
+
+# Subset to only include subjects from Expansion Group 0 and 2
+matched_data_3_did <- matched_data_3 %>%
+  filter(Medicaid_Expansion_Status %in% c(0, 3)) %>%
+  # Assign treatment variable: 1 for expansion (2), 0 for non-expansion (0)
+  mutate(did_treat_3 = ifelse(Medicaid_Expansion_Status == 3, 1, 0),
+         # Define Pre (2006-2013) and Post (2014+)
+         did_time_3 = ifelse(dx.yr_grouped %in% c("2006-2010", "2011-2013"), "Pre", "Post"))
+
+# Convert did_time and did_treat to factors with explicit ordering:
+matched_data_3_did <- matched_data_3_did %>%
+  mutate(
+    did_time_3 = factor(did_time_3, levels = c("Pre", "Post")),
+    did_treat_3 = factor(did_treat_3, levels = c(0, 1))
+  )
+
+matched_data_3_did <- matched_data_3_did %>%
+  filter(!grepl("Unknown Race", trimws(Race.and.origin.recode..NHW..NHB..NHAIAN..NHAPI..Hispanic.)))
+
+matched_data_3_did$capped_time_60 <- pmin(matched_data_3_did$Survival.months, 60)
+matched_data_3_did$capped_event_60 <- ifelse(matched_data_3_did$Survival.months > 60, 0, matched_data_3_did$Event)
+
+
+
+capped_fin_cox_psm_final_did_3 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time_3 * did_treat_3 + cluster(Medicaid.Expansion.Status),
+                                        data = matched_data_3_did, robust = TRUE)
+
+summary(capped_fin_cox_psm_final_did_3)
+
+capped_fin_cox_psm_final_did_3 <- tidy(capped_fin_cox_psm_final_did_3, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_3)
+
+write.csv(capped_fin_cox_psm_final_did_3, "coxdata/60/psm_0v3.csv")
+
+
+
+### EARLY EXPANSION IMPLEMENTATION/POST-IMPLEMENTATION 60 MONTH SURVIVAL
+
+# EARLY - consider early months (post-implementation periods)
+# Step 1: Subset data to focus on 2014-2019
+matched_data_1_did_early_1 <- matched_data_1 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2011-2013"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_1_did_early_1 <- matched_data_1_did_early_1 %>%
+  mutate(did_time = ifelse(dx.yr_grouped %in% c("2011-2013"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_1_did_early_1 <- matched_data_1_did_early_1 %>%
+  mutate(did_treat = ifelse(Medicaid_Expansion_Status == 1, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_1_did_early_1 <- matched_data_1_did_early_1 %>%
+  mutate(
+    did_time = factor(did_time, levels = c("Pre", "Post")),
+    did_treat = factor(did_treat, levels = c(0, 1))
+    
+  )
+
+# Check reference levels
+contrasts(matched_data_1_did_early_1$did_time)
+contrasts(matched_data_1_did_early_1$did_treat)
+
+matched_data_1_did_early_1$capped_time_60 <- pmin(matched_data_1_did_early_1$Survival.months, 60)
+matched_data_1_did_early_1$capped_event_60 <- ifelse(matched_data_1_did_early_1$Survival.months > 60, 0, matched_data_1_did_early_1$Event)
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_early_1 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time * did_treat+ cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_1_did_early_1, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_early_1)
+
+capped_fin_cox_psm_final_did_early_1 <- tidy(capped_fin_cox_psm_final_early_1, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_early_1)
+
+write.csv(capped_fin_cox_psm_final_did_early_1, "coxdata/60/psm_0v1_early.csv")
+
+
+# LATER
+# Step 1: Subset data to focus on 2014-2019
+matched_data_1_did_later_1 <- matched_data_1 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2014-2016", "2017-2019"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_1_did_later_1 <- matched_data_1_did_later_1 %>%
+  mutate(did_time = ifelse(dx.yr_grouped %in% c("2014-2016", "2017-2019"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_1_did_later_1 <- matched_data_1_did_later_1 %>%
+  mutate(did_treat = ifelse(Medicaid_Expansion_Status == 1, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_1_did_later_1 <- matched_data_1_did_later_1 %>%
+  mutate(
+    did_time = factor(did_time, levels = c("Pre", "Post")),
+    did_treat = factor(did_treat, levels = c(0, 1))
+    
+  )
+
+# Check reference levels
+contrasts(matched_data_1_did_later_1$did_time)
+contrasts(matched_data_1_did_later_1$did_treat)
+
+matched_data_1_did_later_1$capped_time_60 <- pmin(matched_data_1_did_later_1$Survival.months, 60)
+matched_data_1_did_later_1$capped_event_60 <- ifelse(matched_data_1_did_later_1$Survival.months > 60, 0, matched_data_1_did_later_1$Event)
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_later_1 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time * did_treat + cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_1_did_later_1, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_later_1)
+
+capped_fin_cox_psm_final_did_later_1 <- tidy(capped_fin_cox_psm_final_later_1, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_later_1)
+print(capped_fin_cox_psm_final_did_early_1)
+write.csv(capped_fin_cox_psm_final_did_later_1, "coxdata/60/psm_0v1_later.csv")
+
+
+
+### 60 month survival for implementation/postimplemntation periods for on-time expansion group##
+
+# EARLY - consider early months (post-implementation periods)
+# Step1: Subset data to focus on 2017-2019
+matched_data_2_did_early_2 <- matched_data_2 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2011-2013", "2014-2016"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_2_did_early_2 <- matched_data_2_did_early_2 %>%
+  mutate(did_time_2 = ifelse(dx.yr_grouped %in% c("2014-2016"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_2_did_early_2 <- matched_data_2_did_early_2 %>%
+  mutate(did_treat_2 = ifelse(Medicaid_Expansion_Status == 2, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_2_did_early_2 <- matched_data_2_did_early_2 %>%
+  mutate(
+    did_time_2 = factor(did_time_2, levels = c("Pre", "Post")),
+    did_treat_2 = factor(did_treat_2, levels = c(0, 1))
+  )
+
+# Check reference levels
+contrasts(matched_data_2_did_early_2$did_time_2)
+contrasts(matched_data_2_did_early_2$did_treat_2)
+
+matched_data_2_did_early_2$capped_time_60 <- pmin(matched_data_2_did_early_2$Survival.months, 60)
+matched_data_2_did_early_2$capped_event_60 <- ifelse(matched_data_2_did_early_2$Survival.months > 60, 0, matched_data_2_did_early_2$Event)
+
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_early_2 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time_2 * did_treat_2 + cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_2_did_early_2, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_early_2)
+
+capped_fin_cox_psm_final_did_early_2 <- tidy(capped_fin_cox_psm_final_early_2, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_early_2)
+
+write.csv(capped_fin_cox_psm_final_did_early_2, "coxdata/60/psm_0v2_early.csv")
+
+
+
+
+# LATER
+# Step1: Subset data to focus on 2017-2019
+matched_data_2_did_later_2 <- matched_data_2 %>%
+  filter(dx.yr_grouped %in% c("2006-2010", "2011-2013", "2017-2019"))
+
+# Step 2: Update the time variable for 2014-2016 and 2017-2019 periods
+matched_data_2_did_later_2 <- matched_data_2_did_later_2 %>%
+  mutate(did_time_2 = ifelse(dx.yr_grouped %in% c("2017-2019"), "Post", "Pre"))
+
+# Create treatment variable (same as before)
+matched_data_2_did_later_2 <- matched_data_2_did_later_2 %>%
+  mutate(did_treat_2 = ifelse(Medicaid_Expansion_Status == 2, 1, 0))
+
+# Step 3: Ensure 'did_time' is a factor with 'Pre' as reference
+matched_data_2_did_later_2 <- matched_data_2_did_later_2 %>%
+  mutate(
+    did_time_2 = factor(did_time_2, levels = c("Pre", "Post")),
+    did_treat_2 = factor(did_treat_2, levels = c(0, 1))
+  )
+
+# Check reference levels
+contrasts(matched_data_2_did_later_2$did_time_2)
+contrasts(matched_data_2_did_later_2$did_treat_2)
+
+matched_data_2_did_later_2$capped_time_60 <- pmin(matched_data_2_did_later_2$Survival.months, 60)
+matched_data_2_did_later_2$capped_event_60 <- ifelse(matched_data_2_did_later_2$Survival.months > 60, 0, matched_data_2_did_later_2$Event)
+
+
+
+# Step 4: Run Cox regression model
+capped_fin_cox_psm_final_later_2 <- coxph(Surv(capped_time_60, capped_event_60) ~ did_time_2 * did_treat_2 + cluster(Medicaid.Expansion.Status),
+                                          data = matched_data_2_did_later_2, robust = TRUE)
+
+# Step 5: Summary of the model
+summary(capped_fin_cox_psm_final_later_2)
+
+capped_fin_cox_psm_final_did_later_2 <- tidy(capped_fin_cox_psm_final_later_2, conf.int = TRUE) %>%
+  mutate(HR = exp(estimate),  # Convert coefficients to hazard ratios
+         CI_lower = exp(conf.low),
+         CI_upper = exp(conf.high)) %>%
+  dplyr::select(term, HR, CI_lower, CI_upper, p.value)
+
+print(capped_fin_cox_psm_final_did_later_2)
+
+write.csv(capped_fin_cox_psm_final_did_later_2, "coxdata/60/psm_0v2_later.csv")
